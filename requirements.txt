@@ -1,0 +1,8 @@
+--only-binary=tokenizers
+peft==0.4.0
+transformers>=4.30.0
+datasets==2.12.0
+evaluate==0.4.0
+torch>=2.0.0
+accelerate>=0.20.0
+scikit-learn
