@@ -32,20 +32,20 @@ from help_logging import (
 class PairDataCollator(DataCollatorWithPadding):
     def __call__(self, features):
         batch = super().__call__(features)
-        # Проверка наличия SEP токена
+
         sep_present = (batch['input_ids'] == self.tokenizer.sep_token_id).any(dim=1)
         if not sep_present.all():
-            print("Предупреждение: некоторые примеры не содержат SEP токен!")
+            print("No SEP!")
         return batch
 def format_time(seconds):
-    """Форматирование времени в читаемый вид"""
+
     return str(timedelta(seconds=seconds))
 def main():
     loss_logger, memory_logger, main_logger, console_logger = setup_logging()
     torch.manual_seed(42)
     start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Используемое устройство: {device}")
+
     config = {
         "batch_size": 16,
         "desired_steps": 1000,
