@@ -1,0 +1,17 @@
+apex==0.9.10dev
+datasets==2.12.0
+fairscale==0.4.13
+filelock==3.18.0
+huggingface_hub==0.30.1
+loralib==0.1.2
+numpy==2.2.4
+optuna==4.2.1
+packaging==24.2
+pandas==2.2.3
+ray==2.44.1
+scikit_learn==1.6.1
+sentence_transformers==4.0.2
+torch==2.6.0
+torch_xla==2.6.1
+tqdm==4.67.1
+transformers==4.25.1
