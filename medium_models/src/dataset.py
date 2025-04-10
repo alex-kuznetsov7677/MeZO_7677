@@ -13,9 +13,14 @@ import dataclasses
 from dataclasses import dataclass
 from typing import List, Optional, Union
 import pandas as pd
+from tqdm.auto import tqdm
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+from datasets import disable_caching
+disable_caching() 
+
 
 @dataclass(frozen=True)
 class OurInputFeatures(InputFeatures):
@@ -216,7 +221,15 @@ def tokenize_multipart_input(
             if pd.isna(input_text) or input_text is None:
                 # Empty input
                 input_text = ''
-            input_tokens = enc(input_text) + [tokenizer.sep_token_id]
+                
+            input_tokens = enc(input_text)
+            if task_name == 'mrpc':
+                if sent_id == 0:  # Первое предложение
+                    input_tokens += [tokenizer.sep_token_id, tokenizer.sep_token_id]
+                else:  # Второе предложение
+                    input_tokens += [tokenizer.sep_token_id]
+            else:
+                input_tokens += [tokenizer.sep_token_id]
             input_ids += input_tokens
             attention_mask += [1 for i in range(len(input_tokens))]
             token_type_ids += [sent_id for i in range(len(input_tokens))]
@@ -225,7 +238,6 @@ def tokenize_multipart_input(
             input_ids = input_ids[1:]
             attention_mask = attention_mask[1:]
             token_type_ids = token_type_ids[1:]
-
     # Padding
     if first_sent_limit is not None and len(input_ids) > max_length:
         # If using sentence limit, the total length still exceeds the maximum limit, report a warning
@@ -269,7 +281,6 @@ def tokenize_multipart_input(
         result['mask_pos'] = mask_pos
 
     return result
-
 
 
 class FewShotDataset(torch.utils.data.Dataset):
@@ -350,7 +361,7 @@ class FewShotDataset(torch.utils.data.Dataset):
 
             if os.path.exists(cached_features_file) and not args.overwrite_cache:
                 start = time.time()
-                self.support_examples, self.query_examples = torch.load(cached_features_file)
+                self.support_examples, self.query_examples = torch.load(cached_features_file, weights_only=False)
                 logger.info(
                     f"Loading features from cached file {cached_features_file} [took %.3f s]", time.time() - start
                 )
@@ -688,7 +699,8 @@ class FewShotDataset(torch.utils.data.Dataset):
             logger.info("guid: %s" % (example.guid))
             logger.info("features: %s" % features)
             logger.info("text: %s" % self.tokenizer.decode(features.input_ids))
-
+            tokens = self.tokenizer.convert_ids_to_tokens(features.input_ids)
+            logger.info("Tokens:", tokens)
         return features
 
 

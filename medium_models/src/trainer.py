@@ -153,6 +153,11 @@ def default_dev_objective(metrics):
     raise Exception("No metric founded for {}".format(metrics))
 
 class Trainer(LinearHeadTrainer):
+    def __init__(self, *args,class_weights=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+        logger.info(self.class_weights)
+
     """
     Adding some functions based on Transformers' Trainer class.
     """
@@ -222,7 +227,40 @@ class Trainer(LinearHeadTrainer):
 
     def should_optim(self, name, param):
         return (not self.args.layer_wise_optim or f".{self.state.global_step % self.model.config.num_hidden_layers}." in name) and param.requires_grad
-
+    def compute_loss(self, model, inputs, return_outputs=False):
+        labels = inputs.get("labels")
+        if labels is None:
+            raise ValueError("Labels not found. Inputs keys: {}".format(inputs.keys()))
+    
+        outputs = model(**inputs)
+        if outputs is None:
+            raise ValueError("Model returned None. Check model architecture or forward().")
+    
+        logits = outputs.logits
+    
+        if hasattr(self, 'class_weights') and self.class_weights is not None:
+            loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights)
+        else:
+            loss_fct = torch.nn.CrossEntropyLoss()
+    
+        probs = torch.softmax(logits, dim=-1)
+        preds = torch.argmax(probs, dim=-1)
+        
+        # Calculate counts of predictions
+        pred_0_count = (preds == 0).sum().item()
+        pred_1_count = (preds == 1).sum().item()
+        total_preds = preds.shape[0]
+        
+        logger.info(f"Predicted class counts - 0: {pred_0_count}/{total_preds} ({pred_0_count/total_preds:.1%}), 1: {pred_1_count}/{total_preds} ({pred_1_count/total_preds:.1%})")
+        logger.info(f"Predicted class probabilities - 0: {probs[:,0].mean().item():.3f}, 1: {probs[:,1].mean().item():.3f}")
+        logger.info(f"True labels distribution - 0: {(labels == 0).float().mean().item():.3f}, 1: {(labels == 1).float().mean().item():.3f}")
+    
+        loss = loss_fct(logits.view(-1, 2), labels.view(-1))
+    
+        return (loss, outputs) if return_outputs else loss
+    
+    
+    
     def zo_forward(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
         model.eval()
         inputs = self._prepare_inputs(inputs)
@@ -677,6 +715,9 @@ class Trainer(LinearHeadTrainer):
                             scheduler.step()
                         
                             # logging
+                            
+                            
+                            
                             if (self.args.logging_steps > 0 and self.state.global_step % self.args.logging_steps == 0) or (
                                 self.state.global_step == 1 and self.args.logging_first_step
                             ):
@@ -721,7 +762,7 @@ class Trainer(LinearHeadTrainer):
                                 z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
                             else:
                                 z = random_vector[name]
-                            param.data = param.data - self.args.learning_rate * projected_grad * z 
+                            param.data = param.data - self.args.learning_rate * (projected_grad * z + self.args.weight_decay * param.data)
 
                         if (self.args.logging_steps > 0 and self.state.global_step % self.args.logging_steps == 0) or (
                                 self.state.global_step == 1 and self.args.logging_first_step
@@ -732,8 +773,15 @@ class Trainer(LinearHeadTrainer):
                                 logs["global_step"] = self.state.global_step
                                 logs["zo_forward_step"] = self.state.zo_forward_step
                                 logs["max_steps"] = self.args.max_steps
-                                logs["max_zo_forward_steps"] = self.args.max_zo_forward_steps
-                                logs["time"] = int(time.time() - start_time)
+
+                                if self.state.global_step % 10 == 0:
+                                    for name, param in model.named_parameters():
+                                        if param.requires_grad and 'lora_' not in name:  # Только LoRA-параметры
+                                            logs[f"param_{name}_mean"] = param.data.mean().item()
+                                            logs[f"param_{name}_std"] = param.data.std().item()
+                                            # Для LoRA-параметров можно добавить дополнительную проверку
+                                #logs["max_zo_forward_steps"] = self.args.max_zo_forward_steps
+                                #logs["time"] = int(time.time() - start_time)
                                 self.log(logs)
                                 logger.info(str(logs))
 
@@ -742,8 +790,9 @@ class Trainer(LinearHeadTrainer):
                         self.epoch = epoch + (step + 1) / len(epoch_iterator)
                     
                     # Debug information
-                    # print("%.5f, %.5f" % (loss1.item(), loss2.item()))
-                    # print("Loss: %.10f, projected_grad: %.5f" % (loss1, projected_grad))
+               
+                    logger.info("Loss1,Loss2:%.5f, %.5f" % (loss1.item(), loss2.item()))
+                    logger.info("Loss: %.10f, projected_grad: %.5f" % (loss1, projected_grad))
 
                 # standard, non-ZO optimization
                 else:
@@ -856,6 +905,29 @@ class Trainer(LinearHeadTrainer):
         eval_dataloader = self.get_eval_dataloader(eval_dataset)
 
         output = self.prediction_loop(eval_dataloader, description="Evaluation")
+
+        if output.predictions is not None and output.label_ids is not None:
+            from sklearn.metrics import precision_recall_curve, f1_score
+       
+        # Получаем вероятности для класса 1 (для бинарной классификации)
+            probs = torch.softmax(torch.tensor(output.predictions), dim=-1)[:, 1].numpy()
+            labels = output.label_ids
+        
+        # Строим Precision-Recall кривую
+            precision, recall, thresholds = precision_recall_curve(labels, probs)
+            f1_scores = 2 * (precision * recall) / (precision + recall + 1e-9)
+        
+        # Находим оптимальный порог
+            best_idx = np.argmax(f1_scores[:-1])
+            best_threshold = thresholds[best_idx]
+            logger.info("Thresholds array: %s", thresholds)
+            logger.info("F1-scores array: %s", f1_scores[:-1])
+        # Логируем информацию
+            logger.info(f"Optimal threshold: {best_threshold:.3f}, F1-score: {f1_scores[best_idx]:.3f}")
+
+
+
+
 
         self.log(output.metrics)
         logger.info(output.metrics)

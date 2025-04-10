@@ -1,3 +1,4 @@
+
 """Finetuning the library models for sequence classification on GLUE."""
 
 import dataclasses
@@ -10,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 import numpy as np
-
+from src.modeling_roberta import RobertaForSequenceClassification
 from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer, EvalPrediction, PreTrainedTokenizerBase
 from src.modeling_roberta import RobertaConfig
 from src.modeling_opt import OPTConfig
@@ -29,7 +30,10 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+#from src.modeling_roberta import RobertaConfig
+#AutoConfig.register("my_roberta", RobertaConfig)
 
+from sklearn.utils.class_weight import compute_class_weight
 @dataclass
 class ModelArguments:
     """
@@ -807,6 +811,7 @@ def main():
                 num_labels=num_labels,
                 finetuning_task=data_args.task_name,
                 cache_dir=model_args.cache_dir,
+                architectures=["RobertaForSequenceClassification"],
                 **config_kwargs)
         else:
             config = OPTConfig.from_pretrained(
@@ -821,7 +826,8 @@ def main():
             model_args.config_name if model_args.config_name else model_args.model_name_or_path,
             num_labels=num_labels,
             finetuning_task=data_args.task_name,
-            cache_dir=model_args.cache_dir
+            cache_dir=model_args.cache_dir,
+            architectures=["RobertaForSequenceClassification"]
         )
 
     if training_args.untie_emb:
@@ -835,11 +841,11 @@ def main():
         if training_args.from_linearhead:
             model_fn = MODEL_TYPES[config.model_type]
         else:
-            model_fn = AutoModelForSequenceClassification
+            model_fn = RobertaForSequenceClassification
     else:
         raise NotImplementedError
     special_tokens = []
-
+	
     # Create tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
@@ -860,22 +866,25 @@ def main():
         max_memory = f'{free_in_GB-5}GB'
         n_gpus = torch.cuda.device_count()
         max_memory = {i: max_memory for i in range(n_gpus)}
-
+		
         model = model_fn.from_pretrained(
             model_args.model_name_or_path,
             config=config,
             device_map='auto',
             torch_dtype=torch.float16 if training_args.efficient_zero_order_fp16 else torch.float32,
             max_memory=max_memory,
+            trust_remote_code=True 
         )
     else:
-        model = model_fn.from_pretrained(
+    	model = model_fn.from_pretrained(
             model_args.model_name_or_path,
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
             config=config,
             cache_dir=model_args.cache_dir,
-        )
-
+            trust_remote_code=True  # Добавлено здесь
+       )
+    logger.info(type(config)) 
+    logger.info(model.config)
     if training_args.tie_emb:
         logger.warn("Tie embeddings. Only work for RoBERTa (in our code by default they are not tied)")
         model.tie_emb()
@@ -917,7 +926,8 @@ def main():
     )
 
     set_seed(training_args.seed)
-
+    logger.info(f"Размер eval_dataset: {len(eval_dataset)}")
+    logger.info(f"Первый пример eval_dataset: {eval_dataset[0]}")
     if training_args.random_model_init:
         model.init_weights() # reinit weights to random
 
@@ -951,8 +961,8 @@ def main():
 
             num_sample = test_dataset.num_sample if eval_dataset is None else eval_dataset.num_sample
             logits = predictions.reshape([num_sample, -1, num_logits])
-            logits = logits.mean(axis=0)
-
+            #logits = logits.mean(axis=0)
+            logits = logits[0]
             if num_logits == 1:
                 preds = np.squeeze(logits)
             else:
@@ -974,8 +984,30 @@ def main():
         "standard": Trainer,
         "linearhead": LinearHeadTrainer,
     }
+    
+    
     trainer_class = trainer_classes[training_args.trainer]
     trainer_kwargs = {}
+    if training_args.do_train and train_dataset is not None:
+
+        all_labels = []
+        for item in train_dataset:
+            all_labels.append(item.label)
+    
+        class_weights = compute_class_weight(
+            'balanced',
+            classes=np.unique(all_labels),
+            y=all_labels
+        )
+        class_weights = torch.tensor(class_weights, dtype=torch.float32)
+        logger.info(f"Computed class weights: {class_weights}")
+    else:
+        class_weights = None
+        logger.info(f"Computed class weights: {class_weights}")
+        logger.info(train_dataset)
+        logger.info("looooffff")
+    
+    
     trainer = trainer_class(
         model=model,
         args=training_args,
@@ -983,6 +1015,7 @@ def main():
         eval_dataset=eval_dataset,
         compute_metrics=build_compute_metrics_fn(data_args.task_name),
         data_collator=MyDataCollatorWithPadding(tokenizer),
+        class_weights=class_weights,
         **trainer_kwargs
     )
 
@@ -997,6 +1030,7 @@ def main():
             logits = model(**inputs)[0]
         model.sfc_bias = F.log_softmax(logits.squeeze(0).detach())
         logger.info("SFC bias: {}".format(model.sfc_bias))
+
 
 
     # Training
