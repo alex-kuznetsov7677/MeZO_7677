@@ -14,7 +14,7 @@ on the MRPC (Microsoft Research Paraphrase Corpus) dataset.
 
 ## Installatiom  
 ```bash
-git clone https://github.com/your_username/MeZO.git
+git clone https://github.com/alex-kuznetsov7677/MeZO_7677
 cd MeZO
 pip install -r requirements.txt
 git checkout feature/lora-mezo2
@@ -88,6 +88,8 @@ class_weights = torch.tensor( )
 - MeZO typically requires 3-5x more training steps for convergence compared to standard methods (as per original paper).
 - The recommended packet size of 1024 is difficult to achieve for CPU configurations, which significantly affects the quality of the gradient estimation.
 
+---
+
 **Attempted Improvements:**
 
 1. **Hyperparameter Tuning**  
@@ -102,10 +104,13 @@ class_weights = torch.tensor( )
    - Oversampling minority class (33%->50%)
    - Class weighting (weights=[1.5358, 0.7414] or [2, 0.5])
 
+---
 
 **Conclusions:**
 1. Gradient estimation noise from MeZO too severe
 2. LoRA's low-rank updates may amplify forward-pass noise
+
+---
 
 **Suggested Directions:**
 - Larger batch sizes (>64) for stable gradients
@@ -130,11 +135,6 @@ MeZO_7677/
 
 
 ---
-
-## Conclusion
-✅ LoRA+Adam works as expected, achieving strong performance.
-
-❌ MeZO+LoRA fails to converge under current settings.
 
 
 🔗 Pull Request: MeZO#2
